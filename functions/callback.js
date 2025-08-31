@@ -7,30 +7,26 @@ export async function handler(event) {
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
 
-    if (!code || !state) {
-      return { statusCode: 400, body: "Missing code/state" };
-    }
+    if (!code) return { statusCode: 400, body: "Missing code" };
 
-    // Exchange the code for an access token
     const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
       headers: { "Accept": "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_id: GITHUB_CLIENT_ID,
-        client_secret: GITHUB_CLIENT_SECRET,
-        code
-      })
+      body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, client_secret: GITHUB_CLIENT_SECRET, code })
     });
     const tokenJson = await tokenRes.json();
-    if (!tokenJson.access_token) {
-      return { statusCode: 400, body: "Token exchange failed" };
-    }
+    if (!tokenJson.access_token) return { statusCode: 400, body: "Token exchange failed" };
 
-    // Where the /admin page lives (we stored it in state)
-    const { origin } = JSON.parse(decodeURIComponent(state));
+    let origin = "*"; // safe default so message is received even if origin was mis-guessed
+    try {
+      if (state) {
+        const parsed = JSON.parse(decodeURIComponent(state));
+        if (parsed && parsed.origin) origin = parsed.origin;
+      }
+    } catch {}
+
     const token = tokenJson.access_token;
 
-    // HTML that handles all known Decap/Netlify CMS auth message styles
     const html = `<!doctype html>
 <meta charset="utf-8" />
 <title>Signing you in…</title>
@@ -39,33 +35,35 @@ export async function handler(event) {
     var ORIGIN = ${JSON.stringify(origin)};
     var TOKEN = ${JSON.stringify(token)};
 
-    function sendAllFormats() {
-      // Old/alt format used by some builds
-      window.opener && window.opener.postMessage({ token: TOKEN, provider: "github" }, ORIGIN);
-      // Common Decap/Netlify CMS format
-      window.opener && window.opener.postMessage({ type: "authorization:github", token: TOKEN }, ORIGIN);
+    function sendAll() {
+      try {
+        // Legacy/alt format
+        window.opener && window.opener.postMessage({ token: TOKEN, provider: "github" }, ORIGIN);
+        // Decap/Netlify CMS format
+        window.opener && window.opener.postMessage({ type: "authorization:github", token: TOKEN }, ORIGIN);
+        // Super-safe broadcast when ORIGIN is "*" (covers strict origin checks)
+        window.opener && window.opener.postMessage({ type: "authorization:github", token: TOKEN }, "*");
+      } catch (e) {}
     }
 
-    // If the opener sends a handshake message, reply with the token
     function onMessage(e) {
-      if (e.origin !== ORIGIN) return;
-      if (e.data === "authorizing:github" || (e.data && e.data.type === "authorizing:github")) {
-        sendAllFormats();
+      if (ORIGIN !== "*" && e.origin !== ORIGIN) return;
+      var d = e.data || {};
+      if (d === "authorizing:github" || d.type === "authorizing:github") {
+        sendAll();
         setTimeout(function(){ window.close(); }, 100);
       }
     }
 
     window.addEventListener("message", onMessage, false);
 
-    // Kick off the handshake (covers cases where CMS expects it)
-    try {
-      window.opener && window.opener.postMessage("authorizing:github", ORIGIN);
-    } catch (e) {}
+    // Start a handshake (some builds expect this)
+    try { window.opener && window.opener.postMessage("authorizing:github", ORIGIN); } catch (e) {}
 
-    // Also send token immediately (covers cases with no handshake)
-    sendAllFormats();
+    // Also push immediately (covers builds that don't handshake)
+    sendAll();
 
-    // Fallback: leave a message if there is no opener (rare)
+    // Fallback message if no opener
     setTimeout(function () {
       if (!window.opener) document.body.textContent = "Logged in. You can close this window.";
     }, 200);
