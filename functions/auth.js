@@ -5,30 +5,29 @@ export async function handler(event) {
     ALLOWED_ORIGINS = ""
   } = process.env;
 
-  const allowed = ALLOWED_ORIGINS.split(",").map(s => s.trim()).filter(Boolean);
-  const origin = new URL(event.headers.referer || `https://${event.headers.host}`).origin;
+  const params = new URLSearchParams(event.rawQuery || "");
+  const qsOrigin = params.get("origin");
 
-  if (!allowed.includes(origin)) {
-    return {
-      statusCode: 403,
-      body: "Origin not allowed. Set ALLOWED_ORIGINS env var."
-    };
+  let origin = qsOrigin;
+  if (!origin && event.headers.referer) {
+    try { origin = new URL(event.headers.referer).origin; } catch {}
+  }
+  if (!origin) origin = "*"; // last resort to avoid loops
+
+  const allowed = ALLOWED_ORIGINS.split(",").map(s => s.trim()).filter(Boolean);
+  // If we know the exact origin, enforce allowlist; if "*", let it through
+  if (origin !== "*" && !allowed.includes(origin)) {
+    return { statusCode: 403, body: "Origin not allowed. Set ALLOWED_ORIGINS env var." };
   }
 
-  // where to come back after GitHub
   const redirectUri = new URL("/api/callback", `https://${event.headers.host}`).toString();
-
-  // keep origin in state so callback knows where to postMessage
   const state = encodeURIComponent(JSON.stringify({ origin }));
 
   const authUrl = new URL("https://github.com/login/oauth/authorize");
   authUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
   authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("scope", "repo"); // or "public_repo" if you prefer
+  authUrl.searchParams.set("scope", "repo");
   authUrl.searchParams.set("state", state);
 
-  return {
-    statusCode: 302,
-    headers: { Location: authUrl.toString() }
-  };
+  return { statusCode: 302, headers: { Location: authUrl.toString() } };
 }
